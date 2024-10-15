@@ -1,0 +1,154 @@
+
+from keras.models import Model
+from keras.layers import Add, Input, Dropout, Conv1D, Conv2D, Flatten, Dense, Conv2DTranspose, \
+    AveragePooling2D, concatenate, UpSampling2D, BatchNormalization, Activation, Reshape, LeakyReLU, Lambda
+#from keras.losses import mean_squared_error as mymse
+from keras import regularizers
+from keras.optimizers import SGD, Adam, Adadelta
+from mySSIM import *
+from keras import backend as K
+from mySSIM import *
+
+
+def UnPooling2x2ZeroFilled(x):
+    # https://github.com/tensorflow/tensorflow/issues/2169
+    out = tf.concat([x, tf.zeros_like(x)], 3)
+    out = tf.concat([out, tf.zeros_like(out)], 2)
+
+    sh = x.get_shape().as_list()
+    if None not in sh[1:]:
+        out_size = [-1, sh[1] * 2, sh[2] * 2, sh[3]]
+        return tf.reshape(out, out_size)
+    else:
+        shv = tf.shape(x)
+        ret = tf.reshape(out, [-1, shv[1] * 2, shv[2] * 2, sh[3]])
+        return ret
+
+unpooling = Lambda(UnPooling2x2ZeroFilled)
+
+def oeiloss(y_true, y_pred):
+    lossssim = myssimloss(y_true, y_pred)
+    oeiloss_value = K.mean(K.square(y_pred - y_true)) + 1*lossssim
+    return oeiloss_value
+
+def RB(layerin, fs_1=16, ks_1=8, ss_1=2, fs_2=16, ks_2=8, ss_2=1):
+    ecb1_1 = Conv1D(fs_1, ks_1, strides=ss_1, activation=None, padding='same', kernel_initializer='he_normal')(layerin)
+    #ecb1_1 = BatchNormalization()(ecb1_1)
+    ecb1_1 = Activation('relu')(ecb1_1)
+
+    #ecb1_2 = Conv1D(fs_2, ks_2, strides=ss_2, activation=None, padding='same', kernel_initializer='he_normal')(ecb1_1)
+    #ecb1_2 = BatchNormalization()(ecb1_2)
+    #ecb1_2 = Activation('relu')(ecb1_2)
+
+    #ecb1 = Add()([ecb1_1, ecb1_2])
+
+    return ecb1_1
+
+def DB(layerin, fs_1=256, ks_1=8, ss_1=1, fs_2=256, ks_2=8, ss_2=1, apply_BN = True):
+    dcconv1_1 = unpooling(layerin)
+    dcconv1_1 = Conv2DTranspose(fs_1, ks_1, strides=ss_1, activation=None, padding='same', kernel_initializer='he_normal')(dcconv1_1)
+    #if apply_BN:
+        #dcconv1_1 = BatchNormalization()(dcconv1_1)
+    dcconv1_1 = Activation('relu')(dcconv1_1)
+
+    #dcconv1_2 = Conv2DTranspose(fs_2, ks_2, strides=ss_2, activation=None, padding='same', kernel_initializer='he_normal')(dcconv1_1)
+    #if apply_BN:
+    #    dcconv1_2 = BatchNormalization()(dcconv1_2)
+    #dcconv1_2 = Activation('relu')(dcconv1_2)
+
+    #dcconv1 = Add()([dcconv1_1, dcconv1_2])
+
+    return dcconv1_1
+
+
+def oeinet(pretrained_weights=None, input_size=(1024, 1)):
+    kernal_size_1 = 5
+    kernal_size_2 = 5
+    stride_1 = 1
+    stride_2 = 1
+
+    inputs = Input(input_size)
+
+    # define the encoder part
+    # 1st residual block (RB)
+    ecb1 = RB(inputs, fs_1=16, ks_1=kernal_size_1, ss_1=2, fs_2=16, ks_2=kernal_size_2, ss_2=1)
+
+    # 2nd RB
+    ecb2 = RB(ecb1, fs_1=16, ks_1=kernal_size_1, ss_1=2, fs_2=16, ks_2=kernal_size_2, ss_2=1)
+
+    # 3th RB
+    ecb3 = RB(ecb2, fs_1=16, ks_1=kernal_size_1, ss_1=2, fs_2=16, ks_2=kernal_size_2, ss_2=1)
+
+    # 4th RB
+    ecb4 = RB(ecb3, fs_1=16, ks_1=kernal_size_1, ss_1=2, fs_2=16, ks_2=kernal_size_2, ss_2=1)
+
+    # 5th RB
+    ecb5 = RB(ecb4, fs_1=32, ks_1=kernal_size_1, ss_1=2, fs_2=32, ks_2=kernal_size_2, ss_2=1)
+
+    # 6th RB
+    ecb6 = RB(ecb5, fs_1=64, ks_1=kernal_size_1, ss_1=2, fs_2=64, ks_2=kernal_size_2, ss_2=1)
+
+    # 7th RB
+    ecb7 = RB(ecb6, fs_1=128, ks_1=kernal_size_1, ss_1=4, fs_2=128, ks_2=kernal_size_2, ss_2=1)
+
+    # 8th RB
+    ecb8 = RB(ecb7, fs_1=256, ks_1=kernal_size_1, ss_1=4, fs_2=256, ks_2=kernal_size_2, ss_2=1)
+
+    # 9th RB
+    #ecb9 = RB(ecb8, fs_1=512, ks_1=kernal_size_1, ss_1=4, fs_2=512, ks_2=kernal_size_2, ss_2=1)
+
+    # 10th RB
+    #ecb10 = RB(ecb9, fs_1=1024, ks_1=kernal_size_1, ss_1=4, fs_2=1024, ks_2=kernal_size_2, ss_2=1)
+
+    # define the dimension transformation part
+    dimtrans = Reshape((1, 1, 256))(ecb8)
+    dimtrans = Conv2D(256, 1, activation='relu', padding='same', kernel_initializer='he_normal')(dimtrans)
+
+    # define the decoder part
+    # 1st decoder block
+    #dcconv1 = DB(dimtrans, fs_1=1024, ks_1=kernal_size_1, ss_1=2, fs_2=1024, ks_2=kernal_size_2, ss_2=1, apply_BN = True)
+
+    # 2nd decoder block
+    dcconv2 = DB(dimtrans, fs_1=256, ks_1=kernal_size_1, ss_1=stride_1, fs_2=512, ks_2=kernal_size_2, ss_2=stride_2, apply_BN = True)
+
+    # 3th decoder block
+    dcconv3 = DB(dcconv2, fs_1=256, ks_1=kernal_size_1, ss_1=stride_1, fs_2=512, ks_2=kernal_size_2, ss_2=stride_2, apply_BN = True)
+
+    # 4th decoder block
+    dcconv4 = DB(dcconv3, fs_1=128, ks_1=kernal_size_1, ss_1=stride_1, fs_2=256, ks_2=kernal_size_2, ss_2=stride_2, apply_BN = True)
+
+    # 5th decoder block
+    dcconv5 = DB(dcconv4, fs_1=128, ks_1=kernal_size_1, ss_1=stride_1, fs_2=256, ks_2=kernal_size_2, ss_2=stride_2, apply_BN = True)
+
+    # 6th decoder block
+    dcconv6 = DB(dcconv5, fs_1=128, ks_1=kernal_size_1, ss_1=stride_1, fs_2=128, ks_2=kernal_size_2, ss_2=stride_2, apply_BN = True)
+
+    # 7th decoder block
+    dcconv7 = DB(dcconv6, fs_1=64, ks_1=kernal_size_1, ss_1=stride_1, fs_2=128, ks_2=kernal_size_2, ss_2=stride_2, apply_BN = True)
+
+    # 8th decoder block
+    dcconv8 = DB(dcconv7, fs_1=64, ks_1=kernal_size_1, ss_1=stride_1, fs_2=128, ks_2=kernal_size_2, ss_2=stride_2, apply_BN=True)
+
+    # 9th decoder block
+    dcconv9 = DB(dcconv8, fs_1=64, ks_1=kernal_size_1, ss_1=stride_1, fs_2=128, ks_2=kernal_size_2, ss_2=stride_2, apply_BN=True)
+
+    # 10th decoder block
+    dcconv10 = DB(dcconv9, fs_1=1, ks_1=kernal_size_1, ss_1=stride_1, fs_2=128, ks_2=kernal_size_2, ss_2=stride_2, apply_BN=True)
+
+    dcreshape = Reshape((512, 512))(dcconv10)
+
+    model = Model(inputs=inputs, outputs=dcreshape)
+    #thissgd = SGD(learning_rate=0.0001, decay=0.001, momentum=0.99, nesterov=False)
+    #SGD(learning_rate=0.01, momentum=0.0, nesterov=False, **kwargs)
+    #Adam(learning_rate=0.01, beta_1=0.9, beta_2=0.999, amsgrad=False)
+    model.compile(optimizer=Adam(learning_rate=0.0001, beta_1=0.9, beta_2=0.999, amsgrad=False), loss=oeiloss, metrics=['mean_squared_error'])
+
+    model.summary()
+
+    if (pretrained_weights):
+        model.load_weights(pretrained_weights)
+
+    return model
+
+
+
