@@ -1,0 +1,86 @@
+from myModel import *
+import tensorflow as tf
+import datetime, os
+from keras import backend as K
+from keras.models import load_model
+from keras.callbacks import ModelCheckpoint,TensorBoard
+import numpy as np
+from DataGene import DataGenerator
+import hdf5storage
+import matplotlib.pyplot as plt
+import scipy.io as scio
+
+
+# get train dataset
+train_path_images = r""
+train_path_labels = r""
+train_namedir_img = os.walk(train_path_images)
+train_namedir_lab = os.walk(train_path_labels)
+train_listdir_img = next(train_namedir_img)
+train_listdir_lab = next(train_namedir_lab)
+train_list_names_img = train_listdir_img[2]
+train_list_names_lab = train_listdir_img[2]
+
+trainData = DataGenerator(train_path_images, train_path_labels, train_list_names_img, batch_size=1,
+                 dim_in=[1024,1], dim_out=[512,512], shuffle=True)
+
+
+# get validation dataset
+valid_path_images = r""
+valid_path_labels = r""
+valid_namedir_img = os.walk(valid_path_images)
+valid_namedir_lab = os.walk(valid_path_labels)
+valid_listdir_img = next(valid_namedir_img)
+valid_listdir_lab = next(valid_namedir_lab)
+valid_list_names_img = valid_listdir_img[2]
+valid_list_names_lab = valid_listdir_img[2]
+
+validData = DataGenerator(valid_path_images, valid_path_labels, valid_list_names_img, batch_size=1,
+                 dim_in=[1024,1], dim_out=[512,512], shuffle=True)
+
+
+# get test dataset
+test_path_images = r""
+test_path_labels = r""
+test_namedir_img = os.walk(test_path_images)
+test_namedir_lab = os.walk(test_path_labels)
+test_listdir_img = next(test_namedir_img)
+test_listdir_lab = next(test_namedir_lab)
+test_list_names_img = test_listdir_img[2]
+test_list_names_lab = test_listdir_img[2]
+
+
+
+# fit model
+modpath = 'USoei_1024.hdf5'
+histpath = 'UShist_1024.mat'
+modelUS = oeinet()
+model_checkpoint = ModelCheckpoint(modpath, monitor='loss',verbose=1, save_best_only=True)
+#logdir = os.path.join("logs", datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+#tensorboard_callback = TensorBoard(logdir, histogram_freq=1)
+histUS = modelUS.fit_generator(trainData, steps_per_epoch=3000, epochs=100, validation_data=validData, validation_steps=2000, callbacks=[model_checkpoint])
+
+# save history
+lossvalue = histUS.history['loss']
+vallossvalue = histUS.history['val_loss']
+mse_train = histUS.history['mean_squared_error']
+mse_valid = histUS.history['val_mean_squared_error']
+scio.savemat(histpath, {'loss': lossvalue, 'val_loss': vallossvalue, 'mse_train': mse_train, 'mse_valid': mse_valid})
+
+
+
+
+# generate test image
+for test_name in test_list_names_lab:
+    testinput = hdf5storage.loadmat(r""+test_name)
+    testimg = testinput['imd']
+    #plt.plot(testimg[:,0])
+    #plt.show()
+
+    testimg = np.reshape(testimg, (1,)+testimg.shape)
+    testlab = modelUS.predict(testimg, verbose=1)
+    #plt.imshow(testlab[0,:,:])
+    #plt.colorbar()
+    #plt.show()
+
+    scio.savemat(r"\\"+"p_"+test_name,{'predicted':testlab})
